@@ -39,10 +39,16 @@ Repeat until budget is exhausted:
    - If the primary metric improved: `autoresearch_keep "what you changed" --phase <phase>`
    - If not improved or crashed: `autoresearch_discard "what you tried" --phase <phase>`
 
-7. **Log to MLflow**: Call `autoresearch_log_mlflow` with the experiment details.
+7. **Reflect**: Call `autoresearch_reflect` with:
+   - `what_worked`: the specific aspect that helped (or didn't hurt)
+   - `what_didnt_work`: why the metric didn't improve (be precise, cite values)
+   - `lesson`: concrete takeaway with actual parameter values
+   - `next_direction`: specific next experiment to try
 
-8. **Reflect**: Think about what you learned. If keeping a reflection note
-   in the logbook, update the experiment entry.
+   **Always call reflect** — this populates the logbook and consolidated
+   lessons. Without it, you lose context and repeat mistakes.
+
+8. **Log to MLflow**: Call `autoresearch_log_mlflow` with the experiment details.
 
 ## Termination
 

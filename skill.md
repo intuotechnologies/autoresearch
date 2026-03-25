@@ -11,20 +11,23 @@ provides the tools (`autoresearch_*`). Use them together.
 ## Workflow
 
 ```
-1. autoresearch_init           → create branch, init logbook
-2. autoresearch_train          → run baseline, get initial metrics
+1. autoresearch_init            → create branch, init logbook
+2. autoresearch_train           → run baseline, get initial metrics
 3. LOOP (until budget exhausted):
-   a. Read the training script
-   b. Check autoresearch_state → know best metric, phase, cooldown, tested list
+   a. autoresearch_state        → know best metric, phase, cooldown, tested list
+   b. Read the training script
    c. Edit the training script (ONE change, following phase rules below)
-   d. autoresearch_train       → run training, get metrics
-   e. If improved: autoresearch_keep "description"
-      If not:     autoresearch_discard
-   f. autoresearch_log_mlflow  → log experiment to MLflow
-   g. Reflect: what worked? what didn't? write lesson.
-4. autoresearch_report         → generate HTML report
-5. autoresearch_issue          → create GitHub Issue with results
+   d. autoresearch_train        → run training, get metrics
+   e. If improved: autoresearch_keep "description" --phase <phase>
+      If not:     autoresearch_discard "description" --phase <phase>
+   f. autoresearch_reflect      → record what worked, what didn't, lesson learned
+   g. autoresearch_log_mlflow   → log experiment to MLflow
+4. autoresearch_report          → generate HTML report
 ```
+
+**IMPORTANT**: Always call `autoresearch_reflect` after keep/discard. The
+reflection populates the logbook and the consolidated lessons. Without it,
+future iterations lose context and repeat mistakes.
 
 ---
 

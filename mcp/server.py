@@ -1,11 +1,12 @@
 """
-autoresearch MCP server — ~200 lines of tools for autonomous ML experimentation.
+autoresearch MCP server — tools for autonomous ML experimentation.
 
 Tools exposed:
   autoresearch_init       — create branch, init logbook/session
   autoresearch_train      — run training script, return metrics
   autoresearch_keep       — commit current script as improvement
   autoresearch_discard    — git reset, restore previous script
+  autoresearch_reflect    — record what worked/didn't, lesson, next direction
   autoresearch_state      — return full experiment state (phase, tested, cooldown)
   autoresearch_log_mlflow — log experiment to MLflow
   autoresearch_report     — generate interactive HTML report
@@ -232,9 +233,27 @@ def autoresearch_keep(description: str, phase: str = "hyperparameters", reasonin
 
 
 @mcp.tool()
-def autoresearch_discard(description: str = "", phase: str = "hyperparameters") -> str:
+def autoresearch_discard(description: str = "", phase: str = "hyperparameters", reasoning: str = "") -> str:
     """Discard current changes — git reset, restore script, increment discard counter."""
     global _consecutive_discards, _switch_cooldown
+
+    root = _project_root()
+    script_path = root / _session["script"]
+
+    diff_summary = ""
+    metrics: dict[str, float] = {}
+    if script_path.exists():
+        try:
+            current = script_path.read_text(encoding="utf-8")
+            diff_summary = _diff(current)
+        except Exception:
+            pass
+    log_path = root / "run.log"
+    if log_path.exists():
+        try:
+            metrics = _parse_metrics(log_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
 
     _git(["checkout", "."])
 
@@ -252,8 +271,8 @@ def autoresearch_discard(description: str = "", phase: str = "hyperparameters") 
 
     entry = {
         "num": len(_experiments) + 1, "description": description or "discarded experiment",
-        "reasoning": "", "phase": phase, "commit": "—", "status": "discard",
-        "metrics": {}, "diff_summary": "", "reflection": None,
+        "reasoning": reasoning, "phase": phase, "commit": "—", "status": "discard",
+        "metrics": metrics, "diff_summary": diff_summary, "reflection": None,
     }
     _experiments.append(entry)
     _append_logbook(entry)
@@ -264,6 +283,31 @@ def autoresearch_discard(description: str = "", phase: str = "hyperparameters") 
         "consecutive_discards": _consecutive_discards,
         "switch_cooldown": _switch_cooldown,
     })
+
+
+@mcp.tool()
+def autoresearch_reflect(
+    what_worked: str,
+    what_didnt_work: str,
+    lesson: str,
+    next_direction: str = "",
+) -> str:
+    """Record reflection on the last experiment. Call AFTER keep/discard."""
+    if not _experiments:
+        return json.dumps({"status": "error", "error": "No experiments yet"})
+
+    reflection = {
+        "what_worked": what_worked,
+        "what_didnt_work": what_didnt_work,
+        "lesson": lesson,
+        "next_direction": next_direction,
+    }
+    _experiments[-1]["reflection"] = reflection
+
+    _update_logbook_reflection(_experiments[-1])
+    _save_experiments()
+
+    return json.dumps({"status": "ok", "experiment": _experiments[-1]["num"]})
 
 
 @mcp.tool()
@@ -420,14 +464,59 @@ def _append_logbook(entry: dict) -> None:
     metrics_str = " | ".join(f"**{k}**: {v:.6f}" for k, v in (entry.get("metrics") or {}).items())
     block = (
         f"### Experiment {entry['num']} — {entry['description']} {emoji}\n\n"
+        f"**Commit**: `{entry.get('commit', '—')}`  |  "
         f"**Status**: {entry['status']}  |  **Phase**: {entry.get('phase', 'N/A')}\n"
         f"{metrics_str}\n\n"
     )
+    if entry.get("reasoning"):
+        block += f"**Hypothesis**: {entry['reasoning']}\n\n"
     if entry.get("diff_summary"):
-        block += f"**Changes**: {entry['diff_summary']}\n\n"
+        block += f"**What changed**: {entry['diff_summary']}\n\n"
+
+    ref = entry.get("reflection")
+    if ref and isinstance(ref, dict):
+        block += _format_reflection(ref)
+
     block += "---\n\n"
     with open(lb, "a", encoding="utf-8") as f:
         f.write(block)
+
+
+def _update_logbook_reflection(entry: dict) -> None:
+    """Append the reflection block to the logbook for an entry added earlier."""
+    root = _project_root()
+    lb = root / "autoresearch" / "logbook.md"
+    ref = entry.get("reflection")
+    if not ref or not isinstance(ref, dict):
+        return
+
+    marker = f"### Experiment {entry['num']} —"
+    content = lb.read_text(encoding="utf-8")
+    idx = content.rfind(marker)
+    if idx == -1:
+        return
+
+    sep = content.find("\n---\n", idx)
+    if sep == -1:
+        with open(lb, "a", encoding="utf-8") as f:
+            f.write(_format_reflection(ref))
+        return
+
+    updated = content[:sep] + "\n" + _format_reflection(ref) + content[sep:]
+    lb.write_text(updated, encoding="utf-8")
+
+
+def _format_reflection(ref: dict) -> str:
+    parts = []
+    if ref.get("what_worked") and ref["what_worked"] != "—":
+        parts.append(f"**What worked**: {ref['what_worked']}\n")
+    if ref.get("what_didnt_work") and ref["what_didnt_work"] != "—":
+        parts.append(f"**What didn't work**: {ref['what_didnt_work']}\n")
+    if ref.get("lesson") and ref["lesson"] != "—":
+        parts.append(f"**Lesson learned**: {ref['lesson']}\n")
+    if ref.get("next_direction") and ref["next_direction"] != "—":
+        parts.append(f"**Next direction**: {ref['next_direction']}\n")
+    return "\n".join(parts) + "\n" if parts else ""
 
 
 def _save_experiments() -> None:

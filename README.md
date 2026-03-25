@@ -78,6 +78,7 @@ for RMSE over 50 experiments. Log everything to MLflow.
 | `autoresearch_train` | Run training script, return metrics |
 | `autoresearch_keep` | Commit current script as improvement |
 | `autoresearch_discard` | Git reset, restore previous version |
+| `autoresearch_reflect` | Record what worked/didn't, lesson, next direction |
 | `autoresearch_state` | Full experiment state (phase, tested, warnings) |
 | `autoresearch_log_mlflow` | Log experiment to MLflow |
 | `autoresearch_report` | Generate interactive HTML report |
