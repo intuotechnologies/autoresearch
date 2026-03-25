@@ -4,11 +4,13 @@ autoresearch MCP server — tools for autonomous ML experimentation.
 Tools exposed:
   autoresearch_init       — create branch, init logbook/session
   autoresearch_train      — run training script, return metrics
-  autoresearch_keep       — commit current script as improvement
+  autoresearch_keep       — commit + validate improvement (is_better + phase check)
   autoresearch_discard    — git reset, restore previous script
   autoresearch_reflect    — record what worked/didn't, lesson, next direction
-  autoresearch_state      — return full experiment state (phase, tested, cooldown)
-  autoresearch_log_mlflow — log experiment to MLflow
+  autoresearch_state      — full state (phase, tested, warnings, untried ideas)
+  autoresearch_logbook    — windowed logbook with consolidated lessons
+  autoresearch_log_mlflow — log experiment to MLflow (+ logbook artifact)
+  autoresearch_issue      — create GitHub Issue with session summary
   autoresearch_report     — generate interactive HTML report
 
 Runs as a stdio MCP server. Claude Code starts it via plugin.json.
@@ -56,6 +58,8 @@ _MODEL_PATTERNS = [
     ("KNN",              re.compile(r"KNeighbors|KNN|knn", re.I)),
 ]
 
+LOGBOOK_WINDOW = 7
+
 def _project_root() -> Path:
     return Path(os.environ.get("AUTORESEARCH_PROJECT_ROOT", os.getcwd()))
 
@@ -64,6 +68,9 @@ def _detect_model(script: str) -> str:
         if pat.search(script):
             return name
     return "Unknown"
+
+def _is_better(new: float, old: float, direction: str) -> bool:
+    return new < old if direction == "minimize" else new > old
 
 def _git(args: list[str], **kw):
     return subprocess.run(["git"] + args, cwd=_project_root(),
@@ -83,6 +90,64 @@ def _parse_metrics(output: str) -> dict[str, float]:
             except ValueError:
                 pass
     return metrics
+
+def _validate_phase(phase: str, cooldown: int) -> tuple[bool, str]:
+    """Hard-block premature model_switch. Returns (ok, rejection_reason)."""
+    if phase != "model_switch":
+        return True, ""
+    hp = _phase_counts.get("hyperparameters", 0)
+    pp = _phase_counts.get("preprocessing", 0)
+    if hp < MIN_HP:
+        return False, (
+            f"REJECTED: model_switch not allowed. "
+            f"Only {hp}/{MIN_HP} hyperparameter experiments done. Stay in Phase 1."
+        )
+    if pp < MIN_PP:
+        return False, (
+            f"REJECTED: model_switch not allowed. "
+            f"Only {pp}/{MIN_PP} preprocessing experiments done. Move to Phase 2."
+        )
+    if cooldown > 0:
+        return False, (
+            f"REJECTED: model_switch on cooldown. "
+            f"Try {cooldown} more HP/PP experiments before switching again."
+        )
+    return True, ""
+
+def _build_untried_ideas(current_model: str) -> list[str]:
+    """Suggest concrete experiments NOT yet tried, based on past descriptions."""
+    all_descs = " ".join(
+        (e.get("description", "") + " " + e.get("diff_summary", "")).lower()
+        for e in _experiments
+    )
+    ideas: list[str] = []
+
+    hp_ideas: dict[str, str] = {}
+    if current_model in ("RandomForest", "GradientBoosting"):
+        hp_ideas = {
+            "min_samples_leaf": "min_samples_leaf=10 or 20",
+            "max_features": "max_features=0.5 or 'sqrt'",
+            "bootstrap": "bootstrap=False",
+            "fewer estimators": "n_estimators=50 (less overfitting)",
+        }
+    for kw, suggestion in hp_ideas.items():
+        if kw not in all_descs:
+            ideas.append(f"[HP] {suggestion}")
+
+    pp_ideas = {
+        "standardscaler": "StandardScaler on numeric features",
+        "robustscaler": "RobustScaler (handles outliers)",
+        "feature selection": "Feature selection (drop low-importance features)",
+        "interaction": "Interaction terms (polynomial degree=2)",
+    }
+    for kw, suggestion in pp_ideas.items():
+        if kw not in all_descs:
+            ideas.append(f"[PP] {suggestion}")
+
+    if "combin" not in all_descs:
+        ideas.append("[COMBO] Combine preprocessing + hyperparameter tweak")
+
+    return ideas
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────
@@ -156,9 +221,14 @@ def autoresearch_train(timeout: int = 300) -> str:
     cmd = cmds.get(lang, cmds["python"])
 
     log_path = root / "run.log"
+    env = os.environ.copy()
+    venv_python = root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        env["MLFLOW_PYTHON_BIN"] = str(venv_python)
     try:
         with open(log_path, "w") as f:
-            result = subprocess.run(cmd, cwd=root, stdout=f, stderr=subprocess.STDOUT, timeout=timeout)
+            result = subprocess.run(cmd, cwd=root, stdout=f, stderr=subprocess.STDOUT,
+                                    timeout=timeout, env=env)
         output = log_path.read_text(encoding="utf-8")
         rc = result.returncode
     except subprocess.TimeoutExpired:
@@ -182,9 +252,19 @@ def autoresearch_train(timeout: int = 300) -> str:
 
 @mcp.tool()
 def autoresearch_keep(description: str, phase: str = "hyperparameters", reasoning: str = "") -> str:
-    """Mark current script as an improvement — commit and update best."""
+    """Mark current script as an improvement — commit and update best.
+
+    Server-side validation:
+    - Checks that the primary metric actually improved (is_better)
+    - Validates phase transitions (blocks premature model_switch)
+    If metric didn't improve, returns an error — call autoresearch_discard instead.
+    """
     global _best_metric, _best_description, _consecutive_discards
     global _last_committed_script, _switch_cooldown
+
+    phase_ok, rejection = _validate_phase(phase, _switch_cooldown)
+    if not phase_ok:
+        return json.dumps({"status": "rejected", "reason": rejection})
 
     root = _project_root()
     script_path = root / _session["script"]
@@ -197,9 +277,19 @@ def autoresearch_keep(description: str, phase: str = "hyperparameters", reasonin
     metrics = _parse_metrics(output)
     new_val = metrics.get(pm)
 
+    if new_val is not None and _best_metric is not None:
+        if not _is_better(new_val, _best_metric, direction):
+            return json.dumps({
+                "status": "rejected",
+                "reason": (
+                    f"Metric did NOT improve: {pm}={new_val:.6f} vs best={_best_metric:.6f} "
+                    f"(direction={direction}). Call autoresearch_discard instead."
+                ),
+                "metrics": metrics,
+            })
+
     diff_summary = _diff(new_script)
 
-    saved_counts = _phase_counts.copy()
     if phase in _phase_counts:
         _phase_counts[phase] += 1
     if phase == "model_switch":
@@ -209,7 +299,6 @@ def autoresearch_keep(description: str, phase: str = "hyperparameters", reasonin
         _switch_cooldown -= 1
 
     _git(["add", _session["script"]], check=True)
-    sha_r = _git(["rev-parse", "--short", "HEAD"])
     _git(["commit", "-m", f"autoresearch [{phase}]: {description}"])
     sha = _git(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
@@ -340,11 +429,36 @@ def autoresearch_state() -> str:
 
     warnings = []
     if _consecutive_discards >= STAGNATION_THRESHOLD:
-        warnings.append(f"STAGNATION: {_consecutive_discards} consecutive discards! Try something radically different.")
+        warnings.append(
+            f"STAGNATION ALERT: {_consecutive_discards} consecutive discards! "
+            "You are stuck. Try something RADICALLY different — not small tweaks."
+        )
+    elif _consecutive_discards >= 5:
+        warnings.append(
+            f"WARNING: {_consecutive_discards} consecutive discards. "
+            "Consider a creative preprocessing approach or combined HP+PP change."
+        )
     elif _consecutive_discards >= 3:
-        warnings.append(f"WARNING: {_consecutive_discards} consecutive discards.")
+        if pp < MIN_PP:
+            warnings.append(
+                f"WARNING: {_consecutive_discards} consecutive discards. "
+                "Hyperparameter tuning alone is NOT working. Move to Phase 2 "
+                "(preprocessing): StandardScaler, log transforms, feature selection."
+            )
+        else:
+            warnings.append(
+                f"WARNING: {_consecutive_discards} consecutive discards. "
+                "Consider switching model family or trying an untested approach."
+            )
+    elif _consecutive_discards >= 1:
+        warnings.append(
+            f"Note: {_consecutive_discards} consecutive discard(s). "
+            "Make sure you're varying enough from previous attempts."
+        )
 
     can_switch = hp >= MIN_HP and pp >= MIN_PP and _switch_cooldown == 0
+
+    untried = _build_untried_ideas(model)
 
     state = {
         "best_metric": _best_metric,
@@ -362,6 +476,7 @@ def autoresearch_state() -> str:
         "tested": tested,
         "warnings": warnings,
         "lessons": _build_lessons(),
+        "untried_ideas": untried,
     }
     return json.dumps(state, indent=2)
 
@@ -395,9 +510,116 @@ def autoresearch_log_mlflow(
             log_path = _project_root() / "run.log"
             if log_path.exists():
                 mlflow.log_artifact(str(log_path), artifact_path="logs")
+            lb_path = _project_root() / "autoresearch" / "logbook.md"
+            if lb_path.exists():
+                mlflow.log_artifact(str(lb_path), artifact_path="docs")
             return json.dumps({"status": "ok", "run_id": run.info.run_id})
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
+
+
+@mcp.tool()
+def autoresearch_logbook(window: int = LOGBOOK_WINDOW) -> str:
+    """Return the logbook with windowing: consolidated lessons + last N entries.
+
+    Prevents context overflow on long sessions by showing only recent entries
+    while preserving all lessons from the full history.
+    """
+    root = _project_root()
+    lb = root / "autoresearch" / "logbook.md"
+    if not lb.exists():
+        return json.dumps({"status": "error", "error": "No logbook yet"})
+
+    content = lb.read_text(encoding="utf-8")
+    sections = content.split("### Experiment ")
+
+    if len(sections) <= 1:
+        base = content
+    else:
+        header = sections[0]
+        entries = sections[1:]
+        if len(entries) <= window:
+            base = content
+        else:
+            omitted = len(entries) - window
+            note = (
+                f"> *({omitted} earlier experiments omitted for brevity. "
+                f"Key patterns: see consolidated lessons below.)*\n\n"
+            )
+            windowed = [header, note]
+            for e in entries[-window:]:
+                windowed.append("### Experiment " + e)
+            base = "".join(windowed)
+
+    lessons = _build_lessons()
+    if lessons:
+        lessons_block = (
+            "## Consolidated Lessons (persistent — never windowed out)\n"
+            + "\n".join(f"- {l}" for l in lessons) + "\n\n"
+        )
+        return lessons_block + base
+
+    return base
+
+
+@mcp.tool()
+def autoresearch_issue() -> str:
+    """Create a GitHub Issue summarizing the session results."""
+    root = _project_root()
+    branch = _session.get("branch", "unknown")
+    pm = _session.get("primary_metric", "rmse")
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    total = len(_experiments)
+
+    lb = root / "autoresearch" / "logbook.md"
+    logbook_text = lb.read_text(encoding="utf-8")[-3000:] if lb.exists() else ""
+
+    title = f"AutoResearch report — {today} ({total} experiments)"
+    body = textwrap.dedent(f"""\
+    ## AutoResearch Report
+
+    **Date**: {today}
+    **Branch**: `{branch}`
+    **Total experiments**: {total}
+    **MLflow experiment**: `{_session.get('mlflow_experiment', 'N/A')}`
+    **MLflow server**: {os.environ.get('MLFLOW_TRACKING_URI', 'N/A')}
+
+    ### Best configuration
+
+    | Field | Value |
+    |---|---|
+    | Metric | {_best_metric:.6f if _best_metric else 'N/A'} |
+    | Description | {_best_description} |
+
+    ### Logbook (last entries)
+
+    <details><summary>Click to expand</summary>
+
+    {logbook_text}
+
+    </details>
+
+    ### Next steps
+
+    - [ ] Review best experiment on MLflow
+    - [ ] If valid, merge `{branch}` into main
+    - [ ] Update techplan.md if new directions needed (human-in-the-loop)
+
+    ---
+    *Generated by AutoResearch — Intuo Consulting*
+    """)
+
+    try:
+        r = subprocess.run(
+            ["gh", "issue", "create", "--title", title, "--body", body,
+             "--label", "autoresearch"],
+            cwd=root, check=True, capture_output=True, text=True,
+        )
+        return json.dumps({"status": "ok", "url": r.stdout.strip()})
+    except FileNotFoundError:
+        return json.dumps({"status": "error", "error": "gh CLI not found"})
+    except subprocess.CalledProcessError as e:
+        return json.dumps({"status": "error", "error": e.stderr})
 
 
 @mcp.tool()

@@ -21,10 +21,11 @@ autoresearch_init --lang <python|r> --primary_metric <metric> --direction <minim
 
 Repeat until budget is exhausted:
 
-1. **Check state**: Call `autoresearch_state`. Read the guidance, phase,
-   tested list, and warnings carefully.
+1. **Check state**: Call `autoresearch_state`. Read guidance, phase,
+   tested list, warnings, and untried ideas carefully.
 
-2. **Read the training script** to understand current configuration.
+2. **Read context**: Call `autoresearch_logbook` for the windowed logbook
+   with consolidated lessons. Then read the training script.
 
 3. **Decide what to change** — follow the phase rules from the skill:
    - Phase 1: hyperparameter tuning (min 3 experiments)
@@ -37,6 +38,8 @@ Repeat until budget is exhausted:
 
 6. **Evaluate**:
    - If the primary metric improved: `autoresearch_keep "what you changed" --phase <phase>`
+     Note: keep validates server-side. If it returns `status: "rejected"`,
+     the metric didn't actually improve or the phase is blocked. Call discard.
    - If not improved or crashed: `autoresearch_discard "what you tried" --phase <phase>`
 
 7. **Reflect**: Call `autoresearch_reflect` with:
@@ -55,8 +58,9 @@ Repeat until budget is exhausted:
 When budget is exhausted (check `autoresearch_state` → `budget_remaining`):
 
 1. Call `autoresearch_report` to generate the HTML report.
-2. Summarize findings: best configuration, key lessons, suggested next steps.
-3. The human will review the report and decide whether to merge.
+2. Call `autoresearch_issue` to create a GitHub Issue with findings.
+3. Summarize: best configuration, key lessons, suggested next steps.
+4. The human will review the report and decide whether to merge.
 
 ## Key principles
 
@@ -81,8 +85,11 @@ When budget is exhausted (check `autoresearch_state` → `budget_remaining`):
 
 You will run for many iterations. To avoid context degradation:
 
-- Always re-read `autoresearch_state` at the start of each iteration.
-  It has the authoritative list of tested configs and lessons.
-- Don't rely on your memory of earlier experiments — the state tool is truth.
+- Always call `autoresearch_state` + `autoresearch_logbook` at the start
+  of each iteration. They are the authoritative sources.
+- Don't rely on your memory of earlier experiments — the tools are truth.
+- Use `autoresearch_logbook` instead of reading logbook.md directly —
+  it windows old entries and prevents context overflow.
+- Check `untried_ideas` in state when stuck — they suggest concrete things.
 - When reflecting, be specific: mention actual parameter values and metric
   changes, not generic advice.

@@ -14,20 +14,28 @@ provides the tools (`autoresearch_*`). Use them together.
 1. autoresearch_init            → create branch, init logbook
 2. autoresearch_train           → run baseline, get initial metrics
 3. LOOP (until budget exhausted):
-   a. autoresearch_state        → know best metric, phase, cooldown, tested list
-   b. Read the training script
-   c. Edit the training script (ONE change, following phase rules below)
-   d. autoresearch_train        → run training, get metrics
-   e. If improved: autoresearch_keep "description" --phase <phase>
+   a. autoresearch_state        → best metric, phase, cooldown, tested, untried ideas
+   b. autoresearch_logbook      → windowed logbook with consolidated lessons
+   c. Read the training script
+   d. Edit the training script (ONE change, following phase rules below)
+   e. autoresearch_train        → run training, get metrics
+   f. If improved: autoresearch_keep "description" --phase <phase>
       If not:     autoresearch_discard "description" --phase <phase>
-   f. autoresearch_reflect      → record what worked, what didn't, lesson learned
-   g. autoresearch_log_mlflow   → log experiment to MLflow
+      NOTE: keep validates server-side (is_better + phase). If rejected, discard.
+   g. autoresearch_reflect      → record what worked, what didn't, lesson learned
+   h. autoresearch_log_mlflow   → log experiment to MLflow
 4. autoresearch_report          → generate HTML report
+5. autoresearch_issue           → create GitHub Issue with results
 ```
 
-**IMPORTANT**: Always call `autoresearch_reflect` after keep/discard. The
-reflection populates the logbook and the consolidated lessons. Without it,
-future iterations lose context and repeat mistakes.
+**IMPORTANT**:
+- Always call `autoresearch_reflect` after keep/discard. Without it,
+  lessons are lost and the agent repeats mistakes.
+- `autoresearch_keep` enforces server-side validation: it rejects if the
+  metric didn't actually improve or the phase is invalid. Always check the
+  response status.
+- Use `autoresearch_logbook` (not raw file read) for context — it windows
+  old entries and prepends consolidated lessons.
 
 ---
 
