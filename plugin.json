@@ -1,0 +1,35 @@
+{
+  "name": "autoresearch",
+  "version": "0.1.0",
+  "description": "Autonomous ML experiment runner. Give an AI agent a training script and let it experiment overnight — inspired by Karpathy's autoresearch.",
+  "author": "Intuo Consulting",
+  "license": "MIT",
+  "repository": "https://github.com/intuotechnologies/autoresearch",
+  "skills": ["skill.md"],
+  "agents": ["agents/researcher.md"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit && 02_train.*",
+        "command": "bash hooks/phase-guard.sh"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash && autoresearch",
+        "command": "bash hooks/post-train.sh"
+      }
+    ]
+  },
+  "mcp": {
+    "autoresearch": {
+      "command": "python",
+      "args": ["mcp/server.py"],
+      "cwd": "${PLUGIN_DIR}"
+    }
+  },
+  "dependencies": {
+    "python": ">=3.10",
+    "pip": ["mlflow>=2.10", "mcp>=1.0"]
+  }
+}
