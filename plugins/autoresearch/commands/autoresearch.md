@@ -13,15 +13,36 @@ provides the tools (`autoresearch_*`). Use them together.
 
 ---
 
+## Project layout (read once, do not re-explore)
+
+This skill runs on a fixed project structure. Do NOT use Glob or Grep to
+explore — you already know where everything is:
+
+```
+src/02_train.py   ← Python training script (the ONLY file you modify)
+src/02_train.R    ← R training script (alternative — pick one per session)
+techplan.md       ← PRD: objective, metric, model families allowed, constraints
+src/utils.py      ← shared helpers — read-only, never modify
+src/01_preprocess.py ← data pipeline — read-only, never modify
+```
+
+**At startup**: ask the user whether to work on Python (`src/02_train.py`) or R
+(`src/02_train.R`), then read `techplan.md` and the chosen script **once**.
+Do not read them again unless forced (see loop step c).
+
+---
+
 ## Workflow
 
 ```
+0. Ask: Python or R? Read techplan.md + training script (ONCE)
 1. autoresearch_init            → create branch, init logbook
 2. autoresearch_train           → run baseline, get initial metrics
 3. LOOP (until budget exhausted):
    a. autoresearch_state        → best metric, phase, cooldown, tested, untried ideas
    b. autoresearch_logbook      → windowed logbook with consolidated lessons
-   c. Read the training script
+   c. Read training script ONLY if last action was discard or crash-fix
+      (after keep the script is already the version you edited — skip the read)
    d. Edit the training script (ONE change, following phase rules below)
    e. autoresearch_train        → run training, get metrics
    f. If improved: autoresearch_keep "description" --phase <phase>
@@ -41,6 +62,8 @@ provides the tools (`autoresearch_*`). Use them together.
   response status.
 - Use `autoresearch_logbook` (not raw file read) for context — it windows
   old entries and prepends consolidated lessons.
+- **Never read files outside `src/02_train.*` and `techplan.md`.** The
+  rest of the project is irrelevant to your task.
 
 ---
 
