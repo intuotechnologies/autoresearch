@@ -1,0 +1,8 @@
+{
+  "name": "autoresearch",
+  "version": "0.1.0",
+  "description": "Autonomous ML experiment runner. Give Claude a training script and let it experiment overnight — inspired by Karpathy's autoresearch.",
+  "author": {
+    "name": "Intuo Consulting"
+  }
+}

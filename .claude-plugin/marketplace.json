@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "autoresearch",
+  "owner": {
+    "name": "Intuo Consulting"
+  },
+  "plugins": [
+    {
+      "name": "autoresearch",
+      "source": "./plugins/autoresearch",
+      "description": "Autonomous ML experiment runner. Give Claude a training script and let it experiment overnight.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Intuo Consulting"
+      }
+    }
+  ]
+}
