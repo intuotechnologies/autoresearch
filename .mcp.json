@@ -1,6 +1,8 @@
 {
-  "autoresearch": {
-    "command": "bash",
-    "args": ["-c", "exec uv run \"${CLAUDE_PLUGIN_ROOT}/mcp/server.py\""]
+  "mcpServers": {
+    "autoresearch": {
+      "command": "uv",
+      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/mcp/server.py"]
+    }
   }
 }
