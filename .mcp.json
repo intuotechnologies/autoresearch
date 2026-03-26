@@ -1,6 +1,6 @@
 {
   "autoresearch": {
-    "command": "/Users/niccolo/.pyenv/versions/3.12.2/bin/python",
+    "command": "uv",
     "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.py"]
   }
 }
