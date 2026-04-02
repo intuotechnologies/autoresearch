@@ -3,39 +3,101 @@
 You are an autonomous ML researcher running experiments on a training script.
 Your job: make **one change at a time**, evaluate the result, learn, repeat.
 
-This skill provides the complete methodology. The MCP server `autoresearch`
-provides the tools (`autoresearch_*`). Use them together.
+The MCP server `autoresearch` runs on **Cloud Run** and manages state (logbook,
+phase tracking, validation). All local operations (training, git, file edits)
+are done by you directly using Bash, Read, and Edit.
 
 ---
 
 ## Workflow
 
 ```
-1. autoresearch_init            → create branch, init logbook
-2. autoresearch_train           → run baseline, get initial metrics
-3. LOOP (until budget exhausted):
-   a. autoresearch_state        → best metric, phase, cooldown, tested, untried ideas
-   b. autoresearch_logbook      → windowed logbook with consolidated lessons
-   c. Read the training script
+0. CHECK RESUME: if autoresearch/experiments.json exists locally
+   → read it, call autoresearch_restore(data) to reload server state
+   → skip steps 1-4, go straight to the loop
+
+1. Create git branch locally
+2. autoresearch_init             → register session on server
+3. Run baseline training (Bash)  → parse metrics from --- block
+4. autoresearch_baseline         → register baseline metrics on server
+5. LOOP (until budget exhausted):
+   a. autoresearch_state         → best metric, phase, cooldown, tested, untried ideas
+   b. autoresearch_logbook       → windowed logbook with consolidated lessons
+   c. Read the training script (only after discard/crash — skip after keep)
    d. Edit the training script (ONE change, following phase rules below)
-   e. autoresearch_train        → run training, get metrics
-   f. If improved: autoresearch_keep "description" --phase <phase>
-      If not:     autoresearch_discard "description" --phase <phase>
+   e. Run training (Bash)        → parse metrics from --- block
+   f. If improved: git commit, then autoresearch_keep (with metrics + commit SHA)
+      If not:     git checkout, then autoresearch_discard (with metrics)
       NOTE: keep validates server-side (is_better + phase). If rejected, discard.
-   g. autoresearch_reflect      → record what worked, what didn't, lesson learned
-   h. autoresearch_log_mlflow   → log experiment to MLflow
-4. autoresearch_report          → generate HTML report
-5. autoresearch_issue           → create GitHub Issue with results
+   g. autoresearch_reflect       → record what worked, what didn't, lesson learned
+   h. autoresearch_log_mlflow    → log experiment to MLflow
+   i. SAVE STATE: autoresearch_report() → save to autoresearch/experiments.json
+6. autoresearch_report           → JSON report summary
+7. autoresearch_issue            → create GitHub Issue with results
 ```
 
 **IMPORTANT**:
+- The server does NOT run training, git, or file operations — you do all of that.
 - Always call `autoresearch_reflect` after keep/discard. Without it,
   lessons are lost and the agent repeats mistakes.
 - `autoresearch_keep` enforces server-side validation: it rejects if the
   metric didn't actually improve or the phase is invalid. Always check the
-  response status.
+  response status. If rejected, undo the commit and call `autoresearch_discard`.
 - Use `autoresearch_logbook` (not raw file read) for context — it windows
   old entries and prepends consolidated lessons.
+
+## Local persistence
+
+The Cloud Run server keeps state **in memory only** — it loses everything on
+restart. To persist across sessions:
+
+1. **After each iteration** (step 5i): call `autoresearch_report()` and save
+   the JSON result to `autoresearch/experiments.json` locally.
+
+2. **On startup** (step 0): if `autoresearch/experiments.json` exists, read it
+   and call `autoresearch_restore(data=<contents>)` to reload the server state.
+   The server reconstructs everything: session, experiments, phase counts,
+   best metric, logbook.
+
+3. **Also save the logbook**: call `autoresearch_logbook()` and save the
+   markdown to `autoresearch/logbook.md` — useful for human review.
+
+This way each project has its own `autoresearch/` folder with full history,
+and the agent can resume any project from where it left off.
+
+---
+
+## Parsing metrics from training output
+
+The training script prints a `---` block to stdout:
+
+```
+---
+rmse: 0.1234
+mae: 0.0567
+r2: 0.9123
+---
+```
+
+Redirect output to a file: `Rscript src/02_train.R > run.log 2>&1`
+(or `uv run src/02_train.py > run.log 2>&1`), then parse:
+
+```bash
+python3 -c "
+in_block = False
+for line in open('run.log'):
+    s = line.strip()
+    if s == '---':
+        in_block = not in_block
+        continue
+    if in_block and ':' in s:
+        k, v = s.split(':', 1)
+        try: print(f'{k.strip()}: {float(v.strip())}')
+        except: pass
+"
+```
+
+Build a metrics dict from the output (e.g. `{"rmse": 0.123, "mae": 0.056, "r2": 0.91}`).
 
 ---
 
@@ -148,3 +210,4 @@ If you see a stagnation warning (8+ consecutive discards):
 - Don't switch models every 1-2 experiments (deep-dive first)
 - Don't remove the metric output block from the training script
 - Don't modify files other than the training script
+- Don't commit before confirming the metric improved locally

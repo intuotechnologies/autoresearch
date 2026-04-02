@@ -7,29 +7,7 @@
   "repository": "https://github.com/intuotechnologies/autoresearch",
   "skills": ["skill.md"],
   "agents": ["agents/researcher.md"],
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit && 02_train.*",
-        "command": "bash hooks/phase-guard.sh"
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash && autoresearch",
-        "command": "bash hooks/post-train.sh"
-      }
-    ]
-  },
-  "mcp": {
-    "autoresearch": {
-      "command": "python",
-      "args": ["mcp/server.py"],
-      "cwd": "${PLUGIN_DIR}"
-    }
-  },
   "dependencies": {
-    "python": ">=3.10",
-    "pip": ["mlflow>=2.10", "mcp>=1.0"]
+    "python": ">=3.10"
   }
 }

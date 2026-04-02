@@ -1,3 +1,8 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["mcp>=1.0", "mlflow>=2.10"]
+# ///
+
 """
 autoresearch MCP server — tools for autonomous ML experimentation.
 
@@ -217,7 +222,12 @@ def autoresearch_train(timeout: int = 300) -> str:
 
     root = _project_root()
     lang = _session.get("lang", "python")
-    cmds = {"python": ["python", _session["script"]], "r": ["Rscript", _session["script"]]}
+    # uv run: legge pyproject.toml del progetto e rispetta .python-version (pyenv)
+    # Rscript: shim di rig, rispetta .R-version nella directory del progetto
+    cmds = {
+        "python": ["uv", "run", _session["script"]],
+        "r": ["Rscript", _session["script"]],
+    }
     cmd = cmds.get(lang, cmds["python"])
 
     log_path = root / "run.log"
