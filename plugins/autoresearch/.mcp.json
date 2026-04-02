@@ -1,8 +1,10 @@
 {
   "mcpServers": {
     "autoresearch": {
-      "command": "uv",
-      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/mcp/server.py"]
+      "url": "https://autoresearch-mcp-3vxkgxsfgq-ew.a.run.app/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AR_TOKEN}"
+      }
     }
   }
 }

@@ -8,171 +8,240 @@ allowed-tools: Bash, Read, Edit, Glob, Grep, Write
 You are an autonomous ML researcher running experiments on a training script.
 Your job: make **one change at a time**, evaluate the result, learn, repeat.
 
-This skill provides the complete methodology. The MCP server `autoresearch`
-provides the tools (`autoresearch_*`). Use them together.
+The MCP server `autoresearch` runs on **Cloud Run** and manages state (logbook,
+phase tracking, validation). All local operations (training, git, file edits)
+are done by you directly.
 
 ---
 
 ## Project layout (read once, do not re-explore)
 
-This skill runs on a fixed project structure. Do NOT use Glob or Grep to
-explore — you already know where everything is:
-
 ```
-src/02_train.py   ← Python training script (the ONLY file you modify)
-src/02_train.R    ← R training script (alternative — pick one per session)
-techplan.md       ← PRD: objective, metric, model families allowed, constraints
-src/utils.py      ← shared helpers — read-only, never modify
-src/01_preprocess.py ← data pipeline — read-only, never modify
+src/02_train.py   <- Python training script (the ONLY file you modify)
+src/02_train.R    <- R training script (alternative — pick one per session)
+techplan.md       <- PRD: objective, metric, model families allowed, constraints
+src/utils.py      <- shared helpers — read-only, never modify
+src/01_preprocess.py <- data pipeline — read-only, never modify
 ```
 
-**At startup**: ask the user whether to work on Python (`src/02_train.py`) or R
-(`src/02_train.R`), then read `techplan.md` and the chosen script **once**.
-Do not read them again unless forced (see loop step c).
+**At startup**: ask the user whether to work on Python or R, then read
+`techplan.md` and the chosen script **once**. Do not read them again unless
+forced (see loop step c).
 
 ---
 
-## Workflow
+## Setup (before the loop)
 
 ```
-0. Ask: Python or R? Read techplan.md + training script (ONCE)
-1. autoresearch_init            → create branch, init logbook
-2. autoresearch_train           → run baseline, get initial metrics
-3. LOOP (until budget exhausted):
-   a. autoresearch_state        → best metric, phase, cooldown, tested, untried ideas
-   b. autoresearch_logbook      → windowed logbook with consolidated lessons
-   c. Read training script ONLY if last action was discard or crash-fix
-      (after keep the script is already the version you edited — skip the read)
-   d. Edit the training script (ONE change, following phase rules below)
-   e. autoresearch_train        → run training, get metrics
-   f. If improved: autoresearch_keep "description" --phase <phase>
-      If not:     autoresearch_discard "description" --phase <phase>
-      NOTE: keep validates server-side (is_better + phase). If rejected, discard.
-   g. autoresearch_reflect      → record what worked, what didn't, lesson learned
-   h. autoresearch_log_mlflow   → log experiment to MLflow
-4. autoresearch_report          → generate HTML report
-5. autoresearch_issue           → create GitHub Issue with results
-```
+0. CHECK RESUME: if autoresearch/experiments.json exists locally
+   -> read it, call autoresearch_restore(data=<contents>)
+   -> skip steps 1-3, go straight to the loop
 
-**IMPORTANT**:
-- Always call `autoresearch_reflect` after keep/discard. Without it,
-  lessons are lost and the agent repeats mistakes.
-- `autoresearch_keep` enforces server-side validation: it rejects if the
-  metric didn't actually improve or the phase is invalid. Always check the
-  response status.
-- Use `autoresearch_logbook` (not raw file read) for context — it windows
-  old entries and prepends consolidated lessons.
-- **Never read files outside `src/02_train.*` and `techplan.md`.** The
-  rest of the project is irrelevant to your task.
+   If no experiments.json (fresh start):
+
+0b. Ask: Python or R? Read techplan.md + training script (ONCE)
+
+1. Create git branch locally:
+   TAG=$(date +%b%d | tr '[:upper:]' '[:lower:]')
+   git checkout -b autoresearch/$TAG
+
+2. autoresearch_init(
+       branch="autoresearch/$TAG",
+       lang="r"|"python",
+       primary_metric=<from techplan>,
+       direction="minimize"|"maximize"
+   )
+
+3. Run baseline training:
+   mkdir -p autoresearch
+   Bash: Rscript src/02_train.R > run.log 2>&1
+   (or: uv run src/02_train.py > run.log 2>&1)
+   Parse the --- block from run.log -> extract metrics dict
+
+   autoresearch_baseline(
+       metrics={"rmse": 0.123, ...},
+       script_snippet=<first 20 lines of training script>
+   )
+```
 
 ---
 
-## The rules
+## Main loop (repeat until budget exhausted)
 
-1. **Modify ONLY the training script.** Nothing else. Not the data pipeline,
-   not the evaluation, not the techplan.
-2. **ONE change at a time.** Isolate variables. Never change 5 things at once.
-3. **Primary metric is shown by `autoresearch_state`.** Lower is better for
-   `minimize`, higher for `maximize`.
-4. **No new dependencies.** Use only what's already installed.
-5. **Keep the code readable.** No obfuscated tricks.
-6. **Do NOT remove** the MLflow logging or the structured `---` output block
-   that the training script uses to report metrics.
+```
+a. autoresearch_state(script_snippet=<first 20 lines of script>)
+   -> read: best_metric, phase, guidance, tested list, warnings, untried ideas
 
-## Simplicity criterion
+b. autoresearch_logbook()
+   -> read windowed logbook + consolidated lessons
 
-All else being equal, **simpler is better**. A tiny metric improvement that adds
-20 lines of hacky code is NOT worth it. Removing code while keeping equal or
-better metrics IS always worth it. Weigh complexity cost against improvement.
+c. Read training script ONLY if last action was discard or crash-fix
+   (after keep, the script is already the edited version — skip read)
+
+d. Edit training script — ONE change, following phase rules below
+
+e. Run training:
+   Bash: Rscript src/02_train.R > run.log 2>&1
+   (or: uv run src/02_train.py > run.log 2>&1)
+   Parse --- block -> metrics dict
+   Compare new primary metric vs best_metric from step (a)
+
+f. If metric improved (direction-aware):
+     git add src/02_train.R   (or .py)
+     git commit -m "autoresearch [<phase>]: <description>"
+     SHA=$(git rev-parse --short HEAD)
+     autoresearch_keep(
+         description="<what changed>",
+         phase="hyperparameters"|"preprocessing"|"model_switch",
+         metrics={"rmse": 0.115, ...},
+         commit_sha=SHA
+     )
+     <- If server returns status="rejected": git reset --hard HEAD~1
+        then call autoresearch_discard (server-side validation failed)
+
+   If metric did NOT improve:
+     git checkout src/02_train.R   (or git checkout .)
+     autoresearch_discard(
+         description="<what you tried>",
+         phase="...",
+         metrics={"rmse": 0.130, ...}
+     )
+
+g. autoresearch_reflect(
+       what_worked="...",
+       what_didnt_work="...",
+       lesson="...",
+       next_direction="..."
+   )
+
+h. autoresearch_log_mlflow(
+       experiment_num=N,
+       description="...",
+       metrics={...},
+       status="keep"|"discard",
+       phase="...",
+       lesson="..."
+   )
+
+i. SAVE STATE locally (the server is in-memory only):
+   autoresearch_report() -> save JSON to autoresearch/experiments.json
+   autoresearch_logbook() -> save markdown to autoresearch/logbook.md
+```
+
+---
+
+## Termination
+
+```
+4. autoresearch_report()           -> JSON report summary
+5. autoresearch_issue(repo="owner/repo")  -> GitHub Issue via REST API
+6. Summarize: best config, key lessons, recommended next steps
+```
+
+---
+
+## Parsing metrics from training output
+
+The training script prints a `---` block to stdout:
+
+```
+---
+rmse: 0.1234
+mae: 0.0567
+r2: 0.9123
+---
+```
+
+Parse it with:
+```bash
+python3 -c "
+in_block = False
+for line in open('run.log'):
+    s = line.strip()
+    if s == '---':
+        in_block = not in_block
+        continue
+    if in_block and ':' in s:
+        k, v = s.split(':', 1)
+        try: print(k.strip(), v.strip())
+        except: pass
+"
+```
+
+Or redirect output to a file: `Rscript src/02_train.R > run.log 2>&1`, then
+read `run.log` to extract the block.
 
 ---
 
 ## Strategy: DEEP-DIVE, not surface-skim
 
-You MUST follow phases in order. Do NOT skip ahead.
+Follow phases **in order**. Do NOT skip ahead.
 
 ### Phase 1 — Hyperparameter tuning (minimum 3 experiments)
 
-Exhaust the current model's hyperparameters FIRST:
-
 - Halve AND double key params (n_estimators, max_depth, learning_rate)
-- Combine multiple param changes (lower max_depth + higher n_estimators)
-- Try lesser-known knobs: min_samples_leaf, min_samples_split, max_samples,
-  max_features="sqrt" vs "log2", warm_start, bootstrap=False
-- Try **reducing** complexity (fewer estimators, shallower trees) — simpler
-  often wins on small datasets
+- Combine multiple param changes
+- Try lesser-known knobs: min_samples_leaf, max_features, bootstrap=False
+- Try reducing complexity — simpler often wins on small datasets
 
 ### Phase 2 — Preprocessing & feature engineering (minimum 2 experiments)
 
-**This is where the biggest gains typically are.** Do NOT skip this.
-Concrete ideas (pick ONE per experiment):
-
 - **Feature scaling**: StandardScaler or RobustScaler via Pipeline
 - **Target transform**: `np.log1p(y)` before training, `np.expm1()` on preds
-- **Feature selection**: drop the bottom 3 features by importance
+- **Feature selection**: drop bottom features by importance
 - **Interaction terms**: PolynomialFeatures(degree=2, interaction_only=True)
 - **Outlier handling**: clip extreme values or use RobustScaler
 
 ### Phase 3 — Model family switch (only after Phases 1+2 completed)
 
-Switch to a different model family. When you switch, start a NEW deep-dive
-(3 more hyperparameter + 2 more preprocessing experiments on the new model).
+Switch model family. Start a NEW deep-dive (3 HP + 2 PP on the new model).
 
 ### Cooldown rule
 
-If a model switch is **discarded** (didn't improve), you must complete 2 more
-hyperparameter or preprocessing experiments on the current model before trying
-another switch. Don't hop between models — refine what you have.
-
-Check `autoresearch_state` at the start of every iteration. It shows:
-- Current phase and progress
-- Cooldown status
-- Everything already tested (don't repeat)
-- Stagnation warnings with untried ideas
+Discarded model switch -> 2 more HP/PP experiments before next switch.
 
 ---
 
 ## Reflection protocol
 
-After EVERY experiment (keep or discard), reflect:
-
-1. **What worked**: the specific aspect that helped (or didn't hurt)
-2. **What didn't work**: why the metric didn't improve (be precise)
+After EVERY experiment (keep or discard):
+1. **What worked**: specific aspect that helped (or didn't hurt)
+2. **What didn't work**: why metric didn't improve (be precise)
 3. **Lesson**: concrete takeaway with actual parameter values
 4. **Next direction**: specific next experiment to try
 
-Write these as a brief note. The logbook persists across experiments and helps
-you avoid repeating failed approaches.
+---
+
+## Simplicity criterion
+
+All else equal, **simpler is better**. Removing code while keeping equal or
+better metrics IS always worth it.
 
 ---
 
 ## Crash recovery
 
-If the training script crashes:
-
-1. Read the error message
-2. Fix the bug **minimally** — don't change the model or hyperparameters
+1. Read the error
+2. Fix minimally — don't change model or hyperparameters
 3. Re-run training
-4. If you can't fix it, `autoresearch_discard` and try a different approach
+4. If unfixable: `autoresearch_discard` and try a different approach
 
 ---
 
-## Stagnation protocol
+## Stagnation protocol (8+ consecutive discards)
 
-If you see a stagnation warning (8+ consecutive discards):
-
-- Stop making small tweaks — they aren't working
-- Check the "untried ideas" list in `autoresearch_state`
-- Try something genuinely different from everything in the tested list
-- Consider combining a preprocessing change WITH a hyperparameter change
+- Stop small tweaks — check `untried_ideas` from `autoresearch_state`
+- Try something radically different from the tested list
+- Consider combining preprocessing + hyperparameter change
 
 ---
 
 ## What NOT to do
 
-- Don't repeat an experiment that already failed (check tested list)
-- Don't add unnecessary complexity for marginal gains
-- Don't skip preprocessing — it's often the biggest lever
+- Don't repeat a failed experiment (check tested list)
+- Don't add complexity for marginal gains
+- Don't skip preprocessing — often the biggest lever
 - Don't switch models every 1-2 experiments (deep-dive first)
-- Don't remove the metric output block from the training script
+- Don't remove the `---` metric output block from the training script
 - Don't modify files other than the training script
+- Don't commit before confirming the metric improved locally
