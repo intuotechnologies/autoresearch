@@ -33,17 +33,30 @@ The agent follows a **deep-dive strategy**: exhaust hyperparameters first, then 
 claude plugin add https://github.com/intuotechnologies/autoresearch
 ```
 
-### MCP server dependencies
+### MCP server
+
+The MCP server runs on Cloud Run (see [autoresearch-mcp](https://github.com/intuotechnologies/autoresearch-mcp)).
+The plugin connects to it via the `url` in `.mcp.json` — no local install needed.
+
+### Authentication
+
+The server validates every request with an API key sent as `X-API-Key` header.
+The plugin reads the key from the env var `AR_API_KEY`:
 
 ```bash
-cd ~/.claude/plugins/autoresearch/mcp
-pip install -r requirements.txt
+# Put this in your ~/.zshrc (or wherever you manage env vars):
+export AR_API_KEY="<your-api-key>"
 ```
+
+Ask your admin for the key, or — if you're deploying the server yourself —
+generate one with `openssl rand -hex 32` and set it as the `AUTORESEARCH_API_KEYS`
+env var on Cloud Run. Same value in both places.
 
 ### Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
+| `AR_API_KEY` | **yes** | API key for the MCP server (sent as `X-API-Key` header) |
 | `MLFLOW_TRACKING_URI` | Recommended | MLflow server URL (default: `https://mlflow.intuoconsulting.com`) |
 | `GITHUB_TOKEN` | Optional | For creating GitHub Issues at session end |
 | `AUTORESEARCH_PROJECT_ROOT` | Optional | Override project root (default: `cwd`) |
